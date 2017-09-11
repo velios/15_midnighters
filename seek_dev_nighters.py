@@ -1,9 +1,27 @@
-from datetime import datetime
+import logging
 from collections import namedtuple
+from argparse import ArgumentParser
 
-import pytz
 import pendulum
 import requests
+
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
+logger = logging.getLogger()
+
+
+def make_cmd_arguments_parser():
+    parser_description = 'Script determines who sent tasks between preset time'
+    parser = ArgumentParser(description=parser_description)
+    parser.add_argument('--start_time', '-s',
+                        help='Start value of preset hour (0..23)',
+                        type=int,
+                        default=0)
+    parser.add_argument('--end_time', '-e',
+                        help='end value of preset hour (0..23)',
+                        type=int,
+                        default=6)
+    return parser.parse_args()
 
 
 def load_attempt_json_data(page_number=1):
@@ -13,18 +31,7 @@ def load_attempt_json_data(page_number=1):
     return request.json()
 
 
-def transform_localize_date_from_timestamp(timestamp, timezone):
-    if not timestamp:
-        raise TypeError('no value timestamp')
-    return pytz.timezone(timezone).fromutc(datetime.utcfromtimestamp(timestamp))
-
-
-def transform_localize_date_from_timestamp_pendulum(timestamp, timezone):
-    return pendulum.from_timestamp(timestamp=timestamp,
-                                   tz=timezone)
-
-
-def get_attempts_generator():
+def get_attempts_data_generator():
     pages_count = load_attempt_json_data()['number_of_pages']
     for page in range(1, pages_count + 1):
         for user_data in load_attempt_json_data(page)['records']:
@@ -35,41 +42,30 @@ def get_attempts_generator():
             }
 
 
-def get_midnighters_list(user_attempts_generator, midnight_start_hour=0, midnight_end_hour=6):
-    midnighters_list = []
+def get_midnighters_generator(user_attempts_generator, midnight_start_hour=0, midnight_end_hour=6):
     AttemptUserData = namedtuple('AttemptUserData', ['username', 'localized_datetime'])
     for user_attempt_data in user_attempts_generator:
         try:
-            attempt_datetime = transform_localize_date_from_timestamp(timestamp=user_attempt_data['timestamp'],
-                                                                      timezone=user_attempt_data['timezone'])
-            attempt_datetime2 = transform_localize_date_from_timestamp_pendulum(timestamp=user_attempt_data['timestamp'],
-                                                                                timezone=user_attempt_data['timezone'])
-            if midnight_start_hour <= attempt_datetime.hour <= midnight_end_hour:
-                # midnighters_list.append(AttemptUserData(username=user_attempt_data['username'],
-                #                                         localized_datetime=attempt_datetime))
-                midnighters_list.append((user_attempt_data['username'],
-                                         user_attempt_data['timestamp'],
-                                         user_attempt_data['timezone'],
-                                         attempt_datetime,
-                                         attempt_datetime2))
-        except:
-            pass
-    return midnighters_list
+            attempt_datetime = pendulum.from_timestamp(timestamp=user_attempt_data['timestamp'],
+                                                       tz=user_attempt_data['timezone'])
+            if midnight_start_hour <= attempt_datetime.hour < midnight_end_hour:
+                yield AttemptUserData(username=user_attempt_data['username'],
+                                      localized_datetime=attempt_datetime)
+        except TypeError as error:
+            logging.info('Error: {}. Wrong timestamp user {} '.format(error, user_attempt_data['username']))
 
 
 if __name__ == '__main__':
-    # t = transform_localize_date_from_timestamp(1504080907, 'Asia/Vladivostok')
-    # # try:
-    # #     # a = get_midnighters_list(user_attempts_generator=get_attempts_generator())
-    # a = get_attempts_generator()
-    # print(a)
-    # for x, i in enumerate(a):
-    #     print('{}=>{}=>{}=>{}'.format(x, i['username'], i['timestamp'], i['timezone']))
-    # except TypeError as error:
-    #     print(error)
-    # except pytz.exceptions.UnknownTimeZoneError as error:
-    #     print('Timezone error: value {} set to timezone is incorrect'.format(error))
-
-
-    for i in get_midnighters_list(get_attempts_generator()):
-        print(i)
+    cmd_arguments = make_cmd_arguments_parser()
+    midnight_start_hour, midnight_end_hour = cmd_arguments.start_time, cmd_arguments.end_time
+    midnight_start_time, midnight_end_time = pendulum.create(hour=midnight_start_hour).to_time_string(),\
+                                             pendulum.create(hour=midnight_end_hour).to_time_string()
+    print('Users who sent tasks between {} and {}:'.format(midnight_start_time, midnight_end_time))
+    for index, midnighter in enumerate(get_midnighters_generator(get_attempts_data_generator(),
+                                                                 midnight_start_hour=midnight_start_hour,
+                                                                 midnight_end_hour=midnight_end_hour)):
+        print('{:3} {} from timezone {} '
+              'sent task to review at {}'.format(index,
+                                                 midnighter.username,
+                                                 midnighter.localized_datetime.timezone_name,
+                                                 midnighter.localized_datetime.to_datetime_string()))
